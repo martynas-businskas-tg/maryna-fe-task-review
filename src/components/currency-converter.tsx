@@ -1,17 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import CurrencyDropdown from "./dropdowns";
 import { FaArrowRightArrowLeft, FaRegCircle } from "react-icons/fa6";
 import AmountInput from "./amount-input";
 import { Currency } from "../types";
 import BigNumber from "bignumber.js";
+import debounce from "lodash.debounce";
 
 BigNumber.config({ DECIMAL_PLACES: 6 });
 
 const CurrencyConverter: React.FC = () => {
-  const [amount, setAmount] = useState<BigNumber | null>(new BigNumber(1));
-  const [convertedAmount, setConvertedAmount] = useState<BigNumber | null>(
-    null,
+  const [fromAmount, setFromAmount] = useState<BigNumber | null>(
+    new BigNumber(1),
   );
+  const [toAmount, setToAmount] = useState<BigNumber | null>(null);
   const [exchangeRate, setExchangeRate] = useState<BigNumber | null>(null);
   const [initialConversion, setIsInitialConversion] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,132 +28,169 @@ const CurrencyConverter: React.FC = () => {
     UAH: new BigNumber(50000),
   };
 
+  const checkLimit = useCallback(
+    (amount: BigNumber, currency: Currency): boolean => {
+      const limit = currencyLimits[currency];
+      if (limit && amount.isGreaterThan(limit)) {
+        setError(`Amount exceeds limit for ${currency}: ${limit.toString()}`);
+        return false;
+      }
+      setError(null);
+      return true;
+    },
+    [],
+  );
+
+  const convertCurrency = useCallback(
+    async (
+      from: Currency,
+      to: Currency,
+      amount: BigNumber | null,
+      direction: "from" | "to",
+    ) => {
+      if (amount === null || amount.isZero()) {
+        setFromAmount(null);
+        setToAmount(null);
+        setExchangeRate(null);
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `https://my.transfergo.com/api/fx-rates?amount=${amount.toString()}&from=${from}&to=${to}`,
+        );
+        const data = await res.json();
+        const rate = new BigNumber(data.rate);
+        setExchangeRate(rate);
+
+        if (direction === "from") {
+          const convertedAmount = new BigNumber(data.toAmount);
+          if (checkLimit(amount, from)) {
+            setFromAmount(amount);
+            setToAmount(convertedAmount.decimalPlaces(2));
+          }
+        } else {
+          const convertedAmount = amount.dividedBy(rate);
+          if (checkLimit(convertedAmount, from)) {
+            setFromAmount(convertedAmount.decimalPlaces(2));
+            setToAmount(amount);
+          }
+        }
+      } catch (error) {
+        console.error("Error Fetching", error);
+        setError("Failed to fetch exchange rate. Please try again.");
+      }
+    },
+    [checkLimit],
+  );
+
+  const debouncedConvert = useMemo(
+    () =>
+      debounce(
+        (
+          from: Currency,
+          to: Currency,
+          amount: BigNumber | null,
+          direction: "from" | "to",
+        ) => {
+          convertCurrency(from, to, amount, direction);
+        },
+        300,
+      ),
+    [convertCurrency],
+  );
+
+  const handleFromAmountChange = (value: number | null) => {
+    const newAmount = value !== null ? new BigNumber(value) : null;
+    setLastEditedField("from");
+    if (newAmount !== null) {
+      if (checkLimit(newAmount, fromCurrency)) {
+        setFromAmount(newAmount);
+        debouncedConvert(fromCurrency, toCurrency, newAmount, "from");
+      }
+    } else {
+      setFromAmount(null);
+      setToAmount(null);
+      setExchangeRate(null);
+    }
+  };
+
+  const handleToAmountChange = (value: number | null) => {
+    const newAmount = value !== null ? new BigNumber(value) : null;
+    setLastEditedField("to");
+    setToAmount(newAmount);
+    if (newAmount !== null) {
+      debouncedConvert(fromCurrency, toCurrency, newAmount, "to");
+    } else {
+      setFromAmount(null);
+      setToAmount(null);
+      setExchangeRate(null);
+    }
+  };
   const handleFromCurrencySelect = (currency: Currency) => {
     setFromCurrency(currency);
-    setLastEditedField("from");
+    if (fromAmount !== null) {
+      if (checkLimit(fromAmount, currency)) {
+        debouncedConvert(currency, toCurrency, fromAmount, "from");
+      }
+    }
   };
 
   const handleToCurrencySelect = (currency: Currency) => {
     setToCurrency(currency);
-    setLastEditedField("to");
-  };
-
-  const fetchExchangeRate = async (from: Currency, to: Currency) => {
-    if (amount === null) setAmount(new BigNumber(0));
-    try {
-      const res = await fetch(
-        `https://my.transfergo.com/api/fx-rates?from=${from}&to=${to}`,
-      );
-      const data = await res.json();
-      const rate = new BigNumber(data.rate);
-      setExchangeRate(rate);
-      return rate;
-    } catch (error) {
-      console.error("Error Fetching", error);
-      setExchangeRate(null);
-      return null;
+    if (fromAmount !== null) {
+      debouncedConvert(fromCurrency, currency, fromAmount, "from");
     }
   };
 
   const swapCurrencies = () => {
     setFromCurrency(toCurrency);
     setToCurrency(fromCurrency);
-    setAmount(convertedAmount);
-    setConvertedAmount(amount);
-    setLastEditedField(lastEditedField === "from" ? "to" : "from");
+    setFromAmount(toAmount);
+    setToAmount(fromAmount);
+    if (toAmount !== null) {
+      debouncedConvert(toCurrency, fromCurrency, toAmount, "from");
+    }
   };
 
   const handleConvertButtonClick = async () => {
-    const rate = await fetchExchangeRate(fromCurrency, toCurrency);
-    const limit = currencyLimits[fromCurrency];
-    if (amount === null || rate === null || amount.isZero()) {
+    if (fromAmount === null || fromAmount.isZero()) {
       setError("Amount cannot be empty or zero");
       return;
     }
-    if (limit && amount.isGreaterThan(limit)) {
-      setError(`Amount exceeds limit for ${fromCurrency}: ${limit.toString()}`);
+
+    if (!checkLimit(fromAmount, fromCurrency)) {
       return;
     }
-    const newAmount = amount.multipliedBy(rate);
-    setConvertedAmount(newAmount);
-    setIsInitialConversion(true);
-  };
 
-  const handleToAmountChange = (value: BigNumber | null) => {
-    setConvertedAmount(value);
-    setLastEditedField("to");
-  };
+    try {
+      const res = await fetch(
+        `https://my.transfergo.com/api/fx-rates?amount=${fromAmount.toString()}&from=${fromCurrency}&to=${toCurrency}`,
+      );
+      const data = await res.json();
+      const rate = new BigNumber(data.rate);
+      const convertedAmount = new BigNumber(data.toAmount);
 
-  useEffect(() => {
-    const limit = currencyLimits[fromCurrency];
-    if (amount === null) return;
-
-    if (limit && amount.isGreaterThan(limit)) {
-      setError(`Amount exceeds limit for ${fromCurrency}: ${limit.toString()}`);
-    } else {
+      setExchangeRate(rate);
+      setToAmount(convertedAmount.decimalPlaces(2));
+      setIsInitialConversion(true);
       setError(null);
+    } catch (error) {
+      console.error("Error Fetching", error);
+      setError("Failed to fetch exchange rate. Please try again.");
     }
-  }, [amount, convertedAmount, fromCurrency]);
+  };
+  const [openDropdown, setOpenDropdown] = useState<"from" | "to" | null>(null);
 
-  useEffect(() => {
-    const limit = currencyLimits[fromCurrency];
-    if (!exchangeRate) return;
-
-    if (limit && amount !== null && amount.isGreaterThan(limit)) {
-      setError(`Amount exceeds limit for ${fromCurrency}: ${limit.toString()}`);
-      return;
+  const handleDropdownToggle = (
+    dropdownType: "from" | "to",
+    isOpen: boolean,
+  ) => {
+    if (isOpen) {
+      setOpenDropdown(dropdownType);
+    } else if (openDropdown === dropdownType) {
+      setOpenDropdown(null);
     }
-
-    if (lastEditedField === "from" && amount !== null) {
-      const newConvertedAmount = amount
-        .multipliedBy(exchangeRate)
-        .decimalPlaces(2);
-      if (
-        convertedAmount === null ||
-        !newConvertedAmount.isEqualTo(convertedAmount)
-      ) {
-        setConvertedAmount(newConvertedAmount);
-      }
-    } else if (lastEditedField === "to" && convertedAmount !== null) {
-      const newAmount = convertedAmount
-        .dividedBy(exchangeRate)
-        .decimalPlaces(2);
-      if (limit && newAmount.isGreaterThan(limit)) {
-        setError(
-          `Amount exceeds limit for ${fromCurrency}: ${limit.toString()}`,
-        );
-        console.log(error);
-        return;
-      } else if (amount === null || !newAmount.isEqualTo(amount)) {
-        setAmount(newAmount);
-      }
-    }
-  }, [amount, convertedAmount, lastEditedField, exchangeRate]);
-
-  useEffect(() => {
-    if (fromCurrency && toCurrency && amount) {
-      fetchExchangeRate(fromCurrency, toCurrency).then((rate) => {
-        if (rate !== null) {
-          const newConvertedAmount = amount.multipliedBy(rate).decimalPlaces(2);
-          setConvertedAmount(newConvertedAmount);
-        }
-      });
-    }
-  }, [fromCurrency, toCurrency]);
-
-  const handleFromAmountChange = (value: BigNumber | null) => {
-    if (value !== null) {
-      const limit = currencyLimits[fromCurrency];
-      if (limit && value.isGreaterThan(limit)) {
-        setError(
-          `Amount exceeds limit for ${fromCurrency}: ${limit.toString()}`,
-        );
-      } else {
-        setError(null);
-      }
-    }
-    setAmount(value);
-    setLastEditedField("from");
   };
 
   return (
@@ -162,6 +200,7 @@ const CurrencyConverter: React.FC = () => {
           label="FROM:"
           onSelect={handleFromCurrencySelect}
           selectedCurrency={fromCurrency}
+          onDropdownToggle={(isOpen) => handleDropdownToggle("from", isOpen)}
         />
         <div>
           <button onClick={swapCurrencies}>
@@ -172,36 +211,33 @@ const CurrencyConverter: React.FC = () => {
           label="TO:"
           onSelect={handleToCurrencySelect}
           selectedCurrency={toCurrency}
+          onDropdownToggle={(isOpen) => handleDropdownToggle("to", isOpen)}
         />
       </div>
       <div
         className={`flex ${initialConversion ? "flex-col sm:flex-row items-start" : "flex-col sm:flex-row items-center"} gap-5 mt-5`}
       >
-        <div className={`flex-1 ${!initialConversion ? "w-full" : "sm:flex-1 w-full"}`}>
+        <div
+          className={`flex-1 ${!initialConversion ? "w-full" : "sm:flex-1 w-full"}`}
+        >
           <AmountInput
             currency={fromCurrency}
             label="AMOUNT:"
-            amount={amount?.toNumber() ?? null}
-            onChange={(value) =>
-              handleFromAmountChange(
-                value !== null ? new BigNumber(value) : null,
-              )
-            }
+            amount={fromAmount?.toNumber() ?? null}
+            onChange={handleFromAmountChange}
             placeholder="from"
-            maxAmount={error} // Pass error message as maxAmount prop
+            maxAmount={error}
           />
         </div>
         {initialConversion && (
-          <div className={`flex-1 ${!initialConversion ? "w-full" : "sm:flex-1 w-full"}`}>
+          <div
+            className={`flex-1 ${!initialConversion ? "w-full" : "sm:flex-1 w-full"}`}
+          >
             <AmountInput
               currency={toCurrency}
               label="CONVERTED TO:"
-              amount={convertedAmount?.toNumber() ?? null}
-              onChange={(value) =>
-                handleToAmountChange(
-                  value !== null ? new BigNumber(value) : null,
-                )
-              }
+              amount={toAmount?.toNumber() ?? null}
+              onChange={handleToAmountChange}
               placeholder="To"
             />
           </div>
@@ -210,13 +246,14 @@ const CurrencyConverter: React.FC = () => {
       {!initialConversion && (
         <div className="mt-6 w-full">
           <button
+            disabled={!!error}
             onClick={handleConvertButtonClick}
-            className="px-5 py-2 w-full bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2
-                   "
+            className={`px-5 py-2 w-full bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2
+                            ${error ? "opacity-50 cursor-not-allowed" : ""}
+                        `}
           >
             Convert
           </button>
-          {error && <p className="text-red-400/100 pt-3">{error}</p>}
         </div>
       )}
       {exchangeRate !== null && (

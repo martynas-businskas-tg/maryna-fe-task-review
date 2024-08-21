@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import FlagIcon from "./flag-icon";
 import { Currency } from "../types";
 
@@ -6,29 +6,55 @@ interface DropdownProps {
   label: string;
   onSelect: (currency: Currency) => void;
   selectedCurrency: Currency;
+  onDropdownToggle: (isOpen: boolean) => void;
 }
 
 const CurrencyDropdown: React.FC<DropdownProps> = ({
   label,
   onSelect,
   selectedCurrency,
+  onDropdownToggle,
 }) => {
   const currencies: Currency[] = ["PLN", "EUR", "GBP", "UAH"];
   const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const handleChange = (currency: Currency) => {
     onSelect(currency);
     setIsOpen(false);
+    onDropdownToggle(false);
   };
 
+  const toggleDropdown = () => {
+    setIsOpen(!isOpen);
+    onDropdownToggle(!isOpen);
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(event.target as Node)
+      ) {
+        setIsOpen(false);
+        onDropdownToggle(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [onDropdownToggle]);
+
   return (
-    <div className="relative inline-block w-64 mb-4">
+    <div className="relative inline-block w-64 mb-4" ref={dropdownRef}>
       <label className="block text-gray-700 text-sm font-light mb-2">
         {label}
       </label>
       <div
-        className="border-b-2 border-gray-300 cursor-pointer flex justify-between items-center"
-        onClick={() => setIsOpen(!isOpen)}
+        className="border-b-2 border-gray-300 cursor-pointer flex justify-between items-center pb-1"
+        onClick={toggleDropdown}
       >
         <span className="flex items-center">
           <FlagIcon currency={selectedCurrency} />
@@ -45,17 +71,23 @@ const CurrencyDropdown: React.FC<DropdownProps> = ({
         </svg>
       </div>
       {isOpen && (
-        <ul className="absolute z-10 mt-2 w-full bg-white border border-gray-300 rounded shadow-lg">
-          {currencies.map((currency) => (
-            <li
-              key={currency}
-              className="px-4 py-2 hover:bg-gray-100 cursor-pointer flex items-center gap-3"
-              onClick={() => handleChange(currency)}
-            >
-              <FlagIcon currency={currency} />
-              <span>{currency}</span>
-            </li>
-          ))}
+        <ul className="absolute z-10 mt-2 w-full bg-white border border-gray-300 rounded shadow-lg overflow-hidden">
+          {currencies
+            .filter((currency) => currency !== selectedCurrency)
+            .map((currency, index, filteredArray) => (
+              <li
+                key={currency}
+                className={`px-4 py-2 hover:bg-gray-100 cursor-pointer flex items-center gap-3 ${
+                  index !== filteredArray.length - 1
+                    ? "border-b border-sky-100"
+                    : ""
+                }`}
+                onClick={() => handleChange(currency)}
+              >
+                <FlagIcon currency={currency} />
+                <span>{currency}</span>
+              </li>
+            ))}
         </ul>
       )}
     </div>
